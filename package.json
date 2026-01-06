@@ -1,0 +1,17 @@
+{
+  "name": "lambdameet",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Secure WebRTC video calling platform with roles and scheduling",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspaces",
+    "build": "npm run build --workspaces",
+    "lint": "npm run lint --workspaces",
+    "format": "npm run format --workspaces"
+  },
+  "license": "ISC"
+}
