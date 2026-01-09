@@ -18,6 +18,20 @@ React + Vite client for LambdaMeet. Provides a simple control panel to authentic
 - LiveKit signal health + per-track subscribe/mute toggles
 - Meeting access control panel (lobby, lock, admit/deny, mute/kick)
 - Local audio stats and global mute-all-remote-audio toggle
+- Admin user management (full names, roles, passwords)
+
+## Screens
+- Login: authenticate and select role
+- User Space: preflight and meeting list
+- Admin Space: scheduling, invites, access control
+- Call Room: signaling + LiveKit call UI
+
+## UI components
+- `App` (`web/src/App.tsx`): owns auth/session state, LiveKit room lifecycle, WebSocket signaling state, and routes into the three screens.
+- `UserSpace` (`web/src/App.tsx`): login and device readiness screen; surfaces meeting list and one-click navigation to the call room.
+- `AdminSpace` (`web/src/App.tsx`): scheduling + invite management; includes lobby/lock/mute/kick controls for the selected meeting.
+- `CallSpace` (`web/src/App.tsx`): dedicated call layout with local/remote previews, LiveKit controls, and side panels for signaling + stats.
+- `LiveKitTrackTile` (`web/src/App.tsx`): per-participant tile that attaches tracks and exposes subscribe/quality/mute controls.
 
 ## Scripts
 - `npm run dev` — start Vite dev server

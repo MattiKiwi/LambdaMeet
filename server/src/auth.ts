@@ -7,13 +7,19 @@ import { createUser, findInviteByToken, findUserByEmail } from "./store.js";
 export type AuthTokenPayload = {
   sub: string;
   email: string;
+  fullName?: string | null;
   role: Role;
 };
 
-type TokenSubject = { id: string; email: string; role: Role };
+type TokenSubject = { id: string; email: string; role: Role; fullName?: string | null };
 
 export function signToken(user: TokenSubject) {
-  const payload: AuthTokenPayload = { sub: user.id, email: user.email, role: user.role };
+  const payload: AuthTokenPayload = {
+    sub: user.id,
+    email: user.email,
+    fullName: user.fullName ?? null,
+    role: user.role,
+  };
   return jwt.sign(payload, env.jwtSecret, { expiresIn: "2h" });
 }
 

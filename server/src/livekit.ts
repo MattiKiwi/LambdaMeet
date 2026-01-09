@@ -9,8 +9,8 @@ export type LiveKitConfig = {
 
 export type LiveKitRoomSnapshot = {
   locked: boolean;
-  lobby: { userId: string; role?: string }[];
-  participants: { userId: string; role?: string }[];
+  lobby: { userId: string; role?: string; name?: string | null }[];
+  participants: { userId: string; role?: string; name?: string | null }[];
 };
 
 export function getLiveKitConfig(env: Env): LiveKitConfig {

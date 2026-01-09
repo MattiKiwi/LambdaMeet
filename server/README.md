@@ -5,6 +5,7 @@ TypeScript API + signaling service for LambdaMeet. Handles authentication, meeti
 ## Key responsibilities
 - Auth: JWT issuance/verification, guest invite redemption
 - Meetings: create/list meetings, issue invites
+- Users: admin CRUD for accounts + full names
 - Signaling: WebSocket fanout to room participants
 - Persistence: users/meetings/invites in Postgres
 - Cache: optional Redis connection (enabled when `REDIS_URL` is set)
@@ -47,6 +48,10 @@ Log files are created in `server/logs/app.log`.
 Base URL: `/api`
 - `POST /auth/login`
 - `POST /auth/guest`
+- `GET /users`
+- `POST /users`
+- `PUT /users/:id`
+- `DELETE /users/:id`
 - `GET /meetings`
 - `POST /meetings`
 - `POST /meetings/:id/invites`

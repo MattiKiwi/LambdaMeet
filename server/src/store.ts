@@ -21,11 +21,11 @@ export async function seedAdmin(email: string, password?: string) {
   return user;
 }
 
-export async function createUser(email: string, role: Role, password?: string) {
+export async function createUser(email: string, role: Role, password?: string, fullName?: string) {
   actionStart("store", "user.create", { email, role });
   const passwordHash = password ? bcrypt.hashSync(password, 10) : undefined;
   const user = await prisma.user.create({
-    data: { email, role, passwordHash },
+    data: { email, role, passwordHash, fullName },
   });
   actionSuccess("store", "user.create", { userId: user.id, role: user.role });
   return user;
@@ -43,6 +43,49 @@ export async function findUser(id: string) {
   const user = await prisma.user.findUnique({ where: { id } });
   actionSuccess("store", "user.find_by_id", { userId: id, found: Boolean(user) });
   return user;
+}
+
+export async function listUsers() {
+  actionStart("store", "user.list");
+  const users = await prisma.user.findMany({ orderBy: { createdAt: "desc" } });
+  actionSuccess("store", "user.list", { count: users.length });
+  return users;
+}
+
+export async function updateUser(
+  id: string,
+  input: { email?: string; role?: Role; fullName?: string | null; password?: string },
+) {
+  actionStart("store", "user.update", { userId: id });
+  const passwordHash = input.password ? bcrypt.hashSync(input.password, 10) : undefined;
+  const user = await prisma.user.update({
+    where: { id },
+    data: {
+      email: input.email,
+      role: input.role,
+      fullName: input.fullName,
+      ...(passwordHash ? { passwordHash } : {}),
+    },
+  });
+  actionSuccess("store", "user.update", { userId: user.id, role: user.role });
+  return user;
+}
+
+export async function deleteUser(id: string, options?: { force?: boolean }) {
+  actionStart("store", "user.delete", { userId: id });
+  const meetings = await prisma.meeting.count({ where: { hostId: id } });
+  if (meetings > 0 && !options?.force) {
+    actionSuccess("store", "user.delete", { userId: id, deleted: false, reason: "user_has_meetings" });
+    return { deleted: false, reason: "user_has_meetings" as const };
+  }
+  await prisma.$transaction(async (tx) => {
+    await tx.invite.deleteMany({ where: { meeting: { hostId: id } } });
+    await tx.meeting.deleteMany({ where: { hostId: id } });
+    await tx.invite.updateMany({ where: { userId: id }, data: { userId: null } });
+    await tx.user.delete({ where: { id } });
+  });
+  actionSuccess("store", "user.delete", { userId: id, deleted: true });
+  return { deleted: true as const };
 }
 
 export async function createMeeting(input: {

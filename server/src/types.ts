@@ -3,6 +3,7 @@ export type Role = "admin" | "user" | "guest";
 export type User = {
   id: string;
   email: string;
+  fullName?: string | null;
   role: Role;
   passwordHash?: string;
   createdAt: Date;
@@ -44,4 +45,5 @@ export type RoomParticipant = {
   meetingId: string;
   role: Role;
   socketId: string;
+  name?: string | null;
 };

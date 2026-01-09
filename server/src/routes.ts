@@ -2,7 +2,18 @@ import express, { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 import { env } from "./config.js";
 import { signToken, verifyPassword, verifyToken, devLogin, redeemInvite, AuthTokenPayload } from "./auth.js";
-import { createInvite, createMeeting, findMeeting, findUserByEmail, listMeetingsForUser, seedAdmin } from "./store.js";
+import {
+  createInvite,
+  createMeeting,
+  createUser,
+  deleteUser,
+  findMeeting,
+  findUserByEmail,
+  listMeetingsForUser,
+  listUsers,
+  seedAdmin,
+  updateUser,
+} from "./store.js";
 import { actionFailure, actionStart, actionSuccess, auditLog, withComponent } from "./logger.js";
 import { Role } from "./types.js";
 import { getTurnConfig } from "./turn.js";
@@ -91,7 +102,7 @@ router.post("/auth/login", express.json(), async (req: Request, res: Response) =
   }
   const token = signToken(user);
   log.debug({ step: "auth.login", userId: user.id, role: user.role }, "Login success");
-  res.json({ token, user: { id: user.id, email: user.email, role: user.role } });
+  res.json({ token, user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role } });
   actionSuccess("api", "auth.login", { userId: user.id, role: user.role });
 });
 
@@ -119,8 +130,82 @@ router.post("/auth/guest", express.json(), async (req: Request, res: Response) =
   }
   const token = signToken(user);
   log.debug({ step: "auth.guest", meetingId: invite.meetingId, userId: user.id }, "Guest token issued");
-  res.json({ token, role: invite.role, meetingId: invite.meetingId });
+  res.json({
+    token,
+    role: invite.role,
+    meetingId: invite.meetingId,
+    user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role },
+  });
   actionSuccess("api", "auth.guest", { meetingId: invite.meetingId, userId: user.id });
+});
+
+router.get("/users", requireAuth, requireAdmin, async (_req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "user.list");
+  const users = await listUsers();
+  actionSuccess("api", "user.list", { count: users.length });
+  res.json({
+    users: users.map((user) => ({
+      id: user.id,
+      email: user.email,
+      fullName: user.fullName,
+      role: user.role,
+      createdAt: user.createdAt,
+    })),
+  });
+});
+
+router.post("/users", requireAuth, requireAdmin, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "user.create", { userId: req.user?.sub });
+  const bodySchema = z.object({
+    email: z.string().email(),
+    fullName: z.string().min(1).optional(),
+    role: z.enum(["admin", "user"]).default("user"),
+    password: z.string().min(6).optional(),
+  });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "user.create", { reason: "validation" });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  const user = await createUser(parse.data.email, parse.data.role as Role, parse.data.password, parse.data.fullName);
+  actionSuccess("api", "user.create", { userId: user.id, role: user.role });
+  res.status(201).json({
+    user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role, createdAt: user.createdAt },
+  });
+});
+
+router.put("/users/:id", requireAuth, requireAdmin, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "user.update", { userId: req.params.id });
+  const bodySchema = z.object({
+    email: z.string().email().optional(),
+    fullName: z.string().min(1).nullable().optional(),
+    role: z.enum(["admin", "user"]).optional(),
+    password: z.string().min(6).optional(),
+  });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "user.update", { reason: "validation" });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  const user = await updateUser(req.params.id, parse.data);
+  actionSuccess("api", "user.update", { userId: user.id, role: user.role });
+  res.json({ user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role } });
+});
+
+router.delete("/users/:id", requireAuth, requireAdmin, async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "user.delete", { userId: req.params.id });
+  if (req.user?.sub === req.params.id) {
+    actionFailure("api", "user.delete", { reason: "self_delete" });
+    return res.status(400).json({ error: "Cannot delete current user" });
+  }
+  const force = req.query.force === "true";
+  const result = await deleteUser(req.params.id, { force });
+  if (!result.deleted) {
+    actionFailure("api", "user.delete", { reason: result.reason, userId: req.params.id });
+    return res.status(409).json({ error: "User hosts meetings; reassign or delete meetings first." });
+  }
+  actionSuccess("api", "user.delete", { userId: req.params.id });
+  return res.status(204).send();
 });
 
 router.post("/meetings", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {
@@ -365,7 +450,12 @@ router.post("/livekit/token", requireAuth, express.json(), async (req: Authentic
   }
   try {
     const config = getLiveKitConfig(env);
-    const token = await createLiveKitToken(config, parse.data.room, req.user!.sub, req.user!.email);
+    const token = await createLiveKitToken(
+      config,
+      parse.data.room,
+      req.user!.sub,
+      req.user!.fullName || req.user!.email,
+    );
     actionSuccess("api", "livekit.token", { room: parse.data.room, userId: req.user!.sub });
     return res.json({ token, url: config.url });
   } catch (err) {
@@ -399,6 +489,14 @@ function requireAuth(req: AuthenticatedRequest, res: Response, next: NextFunctio
   }
   req.user = payload;
   actionSuccess("api", "auth.require", { userId: payload.sub });
+  next();
+}
+
+function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  if (req.user?.role !== "admin") {
+    actionFailure("api", "auth.require_admin", { userId: req.user?.sub });
+    return res.status(403).json({ error: "Forbidden" });
+  }
   next();
 }
 

@@ -40,7 +40,13 @@ export function startSignaling(server: Server) {
       return;
     }
 
-    const participant = { userId: auth.sub, meetingId, role: auth.role, socketId: "" + Date.now() + Math.random() };
+    const participant = {
+      userId: auth.sub,
+      meetingId,
+      role: auth.role,
+      socketId: "" + Date.now() + Math.random(),
+      name: auth.fullName || auth.email,
+    };
     const policy = meeting.policyJson as { lobbyRequired?: boolean } | null;
     const lobbyRequired = policy?.lobbyRequired ?? true;
     const locked = lockMap.get(meetingId) ?? false;
@@ -173,13 +179,19 @@ function rawDataSize(data: RawData): number {
 export function listLobby(meetingId: string) {
   const lobby = lobbyMap.get(meetingId);
   if (!lobby) return [];
-  return [...lobby.keys()].map((userId) => ({ userId, role: roomParticipants.get(lobby.get(userId)!)?.role }));
+  return [...lobby.keys()].map((userId) => {
+    const participant = roomParticipants.get(lobby.get(userId)!);
+    return { userId, role: participant?.role, name: participant?.name };
+  });
 }
 
 export function listParticipants(meetingId: string) {
   const room = participantMap.get(meetingId);
   if (!room) return [];
-  return [...room.keys()].map((userId) => ({ userId, role: roomParticipants.get(room.get(userId)!)?.role }));
+  return [...room.keys()].map((userId) => {
+    const participant = roomParticipants.get(room.get(userId)!);
+    return { userId, role: participant?.role, name: participant?.name };
+  });
 }
 
 export function setRoomLock(meetingId: string, locked: boolean) {
