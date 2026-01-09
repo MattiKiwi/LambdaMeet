@@ -3,10 +3,20 @@ import { z } from "zod";
 import { env } from "./config.js";
 import { signToken, verifyPassword, verifyToken, devLogin, redeemInvite, AuthTokenPayload } from "./auth.js";
 import { createInvite, createMeeting, findMeeting, findUserByEmail, listMeetingsForUser, seedAdmin } from "./store.js";
-import { actionFailure, actionStart, actionSuccess, withComponent } from "./logger.js";
+import { actionFailure, actionStart, actionSuccess, auditLog, withComponent } from "./logger.js";
 import { Role } from "./types.js";
 import { getTurnConfig } from "./turn.js";
-import { createLiveKitToken, getLiveKitConfig } from "./livekit.js";
+import { createLiveKitToken, getLiveKitConfig, updateLiveKitRoomMetadata } from "./livekit.js";
+import {
+  admitLobbyUser,
+  denyLobbyUser,
+  getRoomSnapshot,
+  kickParticipant,
+  listLobby,
+  listParticipants,
+  muteParticipant,
+  setRoomLock,
+} from "./signaling.js";
 
 type AuthenticatedRequest = Request & { user?: AuthTokenPayload };
 
@@ -168,6 +178,179 @@ router.post("/meetings/:id/invites", requireAuth, express.json(), async (req: Au
   log.debug({ step: "invite.create", meetingId: meeting.id, inviteId: invite.id, role: invite.role }, "Invite created");
   res.status(201).json({ invite });
   actionSuccess("api", "invite.create", { meetingId: meeting.id, inviteId: invite.id, role: invite.role });
+});
+
+router.get("/meetings/:id/state", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.state", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.state", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.state", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const snapshot = getRoomSnapshot(meeting.id);
+  actionSuccess("api", "meeting.state", { meetingId: meeting.id });
+  res.json(snapshot);
+});
+
+router.get("/meetings/:id/lobby", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.lobby", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.lobby", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.lobby", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const lobby = listLobby(meeting.id);
+  actionSuccess("api", "meeting.lobby", { meetingId: meeting.id, count: lobby.length });
+  res.json({ lobby });
+});
+
+router.get("/meetings/:id/participants", requireAuth, async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.participants", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.participants", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.participants", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const participants = listParticipants(meeting.id);
+  actionSuccess("api", "meeting.participants", { meetingId: meeting.id, count: participants.length });
+  res.json({ participants });
+});
+
+router.post("/meetings/:id/lock", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.lock", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.lock", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.lock", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const bodySchema = z.object({ locked: z.boolean() });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "meeting.lock", { reason: "validation", meetingId: meeting.id });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  const locked = setRoomLock(meeting.id, parse.data.locked);
+  const snapshot = getRoomSnapshot(meeting.id);
+  await updateLiveKitRoomMetadata(getLiveKitConfig(env), meeting.id, snapshot);
+  auditLog("meeting.lock", req.user!.sub, meeting.id, { locked });
+  actionSuccess("api", "meeting.lock", { meetingId: meeting.id, locked });
+  res.json({ locked });
+});
+
+router.post("/meetings/:id/admit", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.admit", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.admit", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.admit", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const bodySchema = z.object({ userId: z.string().min(1) });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "meeting.admit", { reason: "validation", meetingId: meeting.id });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  const ok = admitLobbyUser(meeting.id, parse.data.userId);
+  if (ok) {
+    auditLog("meeting.admit", req.user!.sub, parse.data.userId, { meetingId: meeting.id });
+  }
+  actionSuccess("api", "meeting.admit", { meetingId: meeting.id, admitted: ok });
+  res.json({ admitted: ok });
+});
+
+router.post("/meetings/:id/deny", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.deny", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.deny", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.deny", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const bodySchema = z.object({ userId: z.string().min(1) });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "meeting.deny", { reason: "validation", meetingId: meeting.id });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  const ok = denyLobbyUser(meeting.id, parse.data.userId);
+  if (ok) {
+    auditLog("meeting.deny", req.user!.sub, parse.data.userId, { meetingId: meeting.id });
+  }
+  actionSuccess("api", "meeting.deny", { meetingId: meeting.id, denied: ok });
+  res.json({ denied: ok });
+});
+
+router.post("/meetings/:id/kick", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.kick", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.kick", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.kick", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const bodySchema = z.object({ userId: z.string().min(1) });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "meeting.kick", { reason: "validation", meetingId: meeting.id });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  const ok = kickParticipant(meeting.id, parse.data.userId);
+  if (ok) {
+    auditLog("meeting.kick", req.user!.sub, parse.data.userId, { meetingId: meeting.id });
+  }
+  actionSuccess("api", "meeting.kick", { meetingId: meeting.id, kicked: ok });
+  res.json({ kicked: ok });
+});
+
+router.post("/meetings/:id/mute", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "meeting.mute", { meetingId: req.params.id, userId: req.user?.sub });
+  const meeting = await findMeeting(req.params.id);
+  if (!meeting) {
+    actionFailure("api", "meeting.mute", { reason: "meeting_not_found", meetingId: req.params.id });
+    return res.status(404).json({ error: "Not found" });
+  }
+  if (meeting.hostId !== req.user!.sub && req.user!.role !== "admin") {
+    actionFailure("api", "meeting.mute", { reason: "forbidden", meetingId: meeting.id });
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  const bodySchema = z.object({ userId: z.string().min(1), muted: z.boolean() });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "meeting.mute", { reason: "validation", meetingId: meeting.id });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  const ok = muteParticipant(meeting.id, parse.data.userId, parse.data.muted);
+  if (ok) {
+    auditLog("meeting.mute", req.user!.sub, parse.data.userId, { meetingId: meeting.id, muted: parse.data.muted });
+  }
+  actionSuccess("api", "meeting.mute", { meetingId: meeting.id, muted: parse.data.muted });
+  res.json({ muted: ok });
 });
 
 router.post("/livekit/token", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {

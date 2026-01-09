@@ -10,6 +10,7 @@ TypeScript API + signaling service for LambdaMeet. Handles authentication, meeti
 - Cache: optional Redis connection (enabled when `REDIS_URL` is set)
 - SFU: LiveKit server (token issuance via API)
 - Logging: structured logs with component/step metadata to stdout and `logs/app.log`
+- Audit: host actions (lock/admit/deny/kick/mute) logged with `component=audit`
 
 ## Scripts
 - `npm run dev` — start server with TSX watch
@@ -49,6 +50,17 @@ Base URL: `/api`
 - `GET /meetings`
 - `POST /meetings`
 - `POST /meetings/:id/invites`
+- `GET /meetings/:id/state`
+- `GET /meetings/:id/lobby`
+- `GET /meetings/:id/participants`
+- `POST /meetings/:id/lock`
+- `POST /meetings/:id/admit`
+- `POST /meetings/:id/deny`
+- `POST /meetings/:id/kick`
+- `POST /meetings/:id/mute`
 - `POST /livekit/token`
 
 WebSocket signaling: `/ws?token=...&meetingId=...`
+
+## LiveKit metadata
+Meeting lobby/lock state is synced into LiveKit room metadata so the SFU and UI stay aligned.

@@ -1,6 +1,7 @@
 import type { FormEvent, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  LocalAudioTrack,
   LocalVideoTrack,
   Room,
   RoomEvent,
@@ -29,13 +30,22 @@ type User = { id: string; email: string; role: string };
 type SignalMessage =
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
-  | { type: "ice"; candidate: RTCIceCandidateInit };
+  | { type: "ice"; candidate: RTCIceCandidateInit }
+  | { type: "mute"; muted: boolean }
+  | { type: "lobby" }
+  | { type: "admitted" };
 type LiveKitTrackItem = {
   id: string;
   kind: "video" | "audio";
   track: RemoteTrack;
+  publication: RemoteTrackPublication;
   participantIdentity: string;
   participantName?: string;
+};
+type RoomSnapshot = {
+  locked: boolean;
+  lobby: { userId: string; role?: string }[];
+  participants: { userId: string; role?: string }[];
 };
 
 const DEFAULT_API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
@@ -61,7 +71,17 @@ function App() {
   const [livekitParticipantCount, setLivekitParticipantCount] = useState(0);
   const [livekitStats, setLivekitStats] = useState<Record<string, StatsSummary>>({});
   const [livekitLocalStats, setLivekitLocalStats] = useState<StatsSummary | null>(null);
+  const [livekitLocalAudioStats, setLivekitLocalAudioStats] = useState<StatsSummary | null>(null);
   const [livekitQuality, setLivekitQuality] = useState<VideoQuality>(VideoQuality.HIGH);
+  const [livekitRoomState, setLivekitRoomState] = useState<string>("disconnected");
+  const [livekitQualityPrefs, setLivekitQualityPrefs] = useState<Record<string, VideoQuality>>({});
+  const [livekitReconnects, setLivekitReconnects] = useState(0);
+  const [livekitSignalState, setLivekitSignalState] = useState("idle");
+  const [livekitSubscriptions, setLivekitSubscriptions] = useState<Record<string, boolean>>({});
+  const [livekitAudioMuted, setLivekitAudioMuted] = useState<Record<string, boolean>>({});
+  const [muteAllRemoteAudio, setMuteAllRemoteAudio] = useState(false);
+  const [roomSnapshot, setRoomSnapshot] = useState<RoomSnapshot | null>(null);
+  const [roomMuteState, setRoomMuteState] = useState<Record<string, boolean>>({});
   const [inviteMeetingId, setInviteMeetingId] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("guest");
@@ -86,6 +106,8 @@ function App() {
   const livekitStatsTimerRef = useRef<number | null>(null);
   const livekitLocalTrackRef = useRef<LocalVideoTrack | null>(null);
   const livekitLocalPrevRef = useRef<StatsSample | null>(null);
+  const livekitLocalAudioRef = useRef<LocalAudioTrack | null>(null);
+  const livekitLocalAudioPrevRef = useRef<StatsSample | null>(null);
   const livekitRemotePrevRef = useRef<Map<string, StatsSample>>(new Map());
 
   const api = useMemo(() => apiClient(apiBase, token), [apiBase, token]);
@@ -289,6 +311,25 @@ function App() {
     } catch {
       return;
     }
+    if (message.type === "lobby") {
+      setStatus("Waiting in lobby");
+      return;
+    }
+    if (message.type === "admitted") {
+      setStatus("Admitted to meeting");
+      return;
+    }
+    if (message.type === "mute") {
+      const muted = message.muted;
+      const stream = videoRef.current?.srcObject as MediaStream | null;
+      if (stream) {
+        stream.getAudioTracks().forEach((track) => {
+          track.enabled = !muted;
+        });
+      }
+      setStatus(muted ? "Muted by host" : "Unmuted");
+      return;
+    }
     const pc = ensurePeerConnection();
     if (message.type === "offer") {
       await pc.setRemoteDescription({ type: "offer", sdp: message.sdp });
@@ -349,10 +390,23 @@ function App() {
       };
       room.on(RoomEvent.ParticipantConnected, updateParticipants);
       room.on(RoomEvent.ParticipantDisconnected, updateParticipants);
+      room.on(RoomEvent.ConnectionStateChanged, (state) => {
+        setLivekitRoomState(state);
+      });
+      room.on(RoomEvent.SignalReconnecting, () => {
+        setLivekitSignalState("signal reconnecting");
+      });
+      room.on(RoomEvent.Reconnecting, () => {
+        setLivekitSignalState("media reconnecting");
+        setLivekitReconnects((prev) => prev + 1);
+      });
+      room.on(RoomEvent.Reconnected, () => {
+        setLivekitSignalState("connected");
+      });
       room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+        const id = publication.trackSid || track.sid;
+        if (!id) return;
         setLivekitTracks((prev) => {
-          const id = publication.trackSid || track.sid;
-          if (!id) return prev;
           if (prev.some((item) => item.id === id)) return prev;
           if (track.kind !== "video" && track.kind !== "audio") return prev;
           return [
@@ -361,19 +415,42 @@ function App() {
               id,
               kind: track.kind,
               track,
+              publication,
               participantIdentity: participant.identity,
               participantName: participant.name,
             },
           ];
         });
+        setLivekitSubscriptions((prev) => ({ ...prev, [id]: true }));
+        if (track.kind === "audio" && muteAllRemoteAudio) {
+          setLivekitAudioMuted((prev) => ({ ...prev, [id]: true }));
+        }
       });
       room.on(RoomEvent.TrackUnsubscribed, (_track: RemoteTrack, publication: RemoteTrackPublication) => {
-        setLivekitTracks((prev) => prev.filter((item) => item.id !== publication.trackSid));
+        const id = publication.trackSid;
+        if (!id) return;
+        setLivekitTracks((prev) => prev.filter((item) => item.id !== id));
+        setLivekitQualityPrefs((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        setLivekitSubscriptions((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
+        setLivekitAudioMuted((prev) => {
+          const next = { ...prev };
+          delete next[id];
+          return next;
+        });
       });
       room.on(RoomEvent.Disconnected, () => {
         setLivekitStatus("disconnected");
         setLivekitTracks([]);
         setLivekitParticipantCount(0);
+        setLivekitRoomState("disconnected");
       });
       setLivekitStatus("connecting");
       await room.connect(livekitUrl, livekitToken);
@@ -382,6 +459,9 @@ function App() {
         room.localParticipant.publishTrack(track);
         if (track.kind === "video" && track instanceof LocalVideoTrack) {
           livekitLocalTrackRef.current = track;
+        }
+        if (track.kind === "audio" && track instanceof LocalAudioTrack) {
+          livekitLocalAudioRef.current = track;
         }
       });
       setLivekitRoom(room);
@@ -408,7 +488,16 @@ function App() {
     setLivekitParticipantCount(0);
     setLivekitStats({});
     setLivekitLocalStats(null);
+    setLivekitLocalAudioStats(null);
+    setLivekitQualityPrefs({});
+    setLivekitRoomState("disconnected");
+    setLivekitReconnects(0);
+    setLivekitSignalState("idle");
+    setLivekitSubscriptions({});
+    setLivekitAudioMuted({});
+    setMuteAllRemoteAudio(false);
     livekitLocalPrevRef.current = null;
+    livekitLocalAudioPrevRef.current = null;
     livekitRemotePrevRef.current = new Map();
     if (livekitStatsTimerRef.current) {
       window.clearInterval(livekitStatsTimerRef.current);
@@ -431,6 +520,19 @@ function App() {
           if (summary.bitrateKbps !== null) {
             setLivekitLocalStats(summary);
             adjustLiveKitQuality(summary);
+          }
+        }
+      }
+
+      const localAudio = livekitLocalAudioRef.current;
+      if (localAudio) {
+        const report = await localAudio.getRTCStatsReport();
+        if (report) {
+          const sample = summarizeReport(report.values(), "outbound", "audio");
+          const summary = computeStatsSummary(livekitLocalAudioPrevRef.current, sample);
+          if (sample) livekitLocalAudioPrevRef.current = sample;
+          if (summary.bitrateKbps !== null) {
+            setLivekitLocalAudioStats(summary);
           }
         }
       }
@@ -462,6 +564,101 @@ function App() {
     if (nextQuality === livekitQuality) return;
     livekitLocalTrackRef.current?.setPublishingQuality(nextQuality);
     setLivekitQuality(nextQuality);
+  }
+
+  function updateRemoteQuality(item: LiveKitTrackItem, quality: VideoQuality) {
+    item.publication.setVideoQuality(quality);
+    setLivekitQualityPrefs((prev) => ({ ...prev, [item.id]: quality }));
+  }
+
+  function toggleSubscription(item: LiveKitTrackItem) {
+    const current = livekitSubscriptions[item.id] ?? true;
+    item.publication.setSubscribed(!current);
+    setLivekitSubscriptions((prev) => ({ ...prev, [item.id]: !current }));
+  }
+
+  function toggleAudioMute(item: LiveKitTrackItem) {
+    const current = livekitAudioMuted[item.id] ?? false;
+    const next = !current;
+    setLivekitAudioMuted((prev) => ({ ...prev, [item.id]: next }));
+    if (!next) {
+      setMuteAllRemoteAudio(false);
+    }
+  }
+
+  function toggleMuteAllRemoteAudio() {
+    const next = !muteAllRemoteAudio;
+    setMuteAllRemoteAudio(next);
+    setLivekitAudioMuted((prev) => {
+      const updated = { ...prev };
+      for (const item of livekitTracks) {
+        if (item.kind === "audio") {
+          updated[item.id] = next;
+        }
+      }
+      return updated;
+    });
+  }
+
+  async function loadRoomState() {
+    if (!meetingToJoin || !token) return;
+    const res = await api.get(`/meetings/${meetingToJoin}/state`);
+    if (!res.ok) {
+      setStatus("Failed to load room state");
+      return;
+    }
+    setRoomSnapshot(res.data);
+  }
+
+  async function toggleRoomLock() {
+    if (!meetingToJoin || !roomSnapshot) return;
+    const res = await api.post(`/meetings/${meetingToJoin}/lock`, { locked: !roomSnapshot.locked });
+    if (!res.ok) {
+      setStatus("Failed to lock room");
+      return;
+    }
+    setRoomSnapshot({ ...roomSnapshot, locked: res.data.locked });
+  }
+
+  async function admitUser(userId: string) {
+    if (!meetingToJoin) return;
+    const res = await api.post(`/meetings/${meetingToJoin}/admit`, { userId });
+    if (!res.ok) {
+      setStatus("Failed to admit");
+      return;
+    }
+    loadRoomState();
+  }
+
+  async function denyUser(userId: string) {
+    if (!meetingToJoin) return;
+    const res = await api.post(`/meetings/${meetingToJoin}/deny`, { userId });
+    if (!res.ok) {
+      setStatus("Failed to deny");
+      return;
+    }
+    loadRoomState();
+  }
+
+  async function kickUser(userId: string) {
+    if (!meetingToJoin) return;
+    const res = await api.post(`/meetings/${meetingToJoin}/kick`, { userId });
+    if (!res.ok) {
+      setStatus("Failed to kick");
+      return;
+    }
+    loadRoomState();
+  }
+
+  async function muteUser(userId: string) {
+    if (!meetingToJoin) return;
+    const muted = !(roomMuteState[userId] ?? false);
+    const res = await api.post(`/meetings/${meetingToJoin}/mute`, { userId, muted });
+    if (!res.ok) {
+      setStatus("Failed to mute");
+      return;
+    }
+    setRoomMuteState((prev) => ({ ...prev, [userId]: muted }));
   }
 
   async function listDevices() {
@@ -717,6 +914,70 @@ function App() {
         </section>
 
         <section className="card">
+          <h2>Meeting access control</h2>
+          <div className="stack">
+            <p className="hint">Host/admin controls for lobby, lock, and participant actions.</p>
+            <div className="row">
+              <button type="button" onClick={loadRoomState} disabled={!token || !meetingToJoin}>
+                Refresh state
+              </button>
+              <button type="button" onClick={toggleRoomLock} disabled={!roomSnapshot}>
+                {roomSnapshot?.locked ? "Unlock room" : "Lock room"}
+              </button>
+            </div>
+            <p className="hint">Locked: {roomSnapshot?.locked ? "yes" : "no"}</p>
+            <div className="tiles">
+              <div className="tile">
+                <div className="tile-header">
+                  <strong>Lobby</strong>
+                  <span className="badge warn">{roomSnapshot?.lobby.length ?? 0}</span>
+                </div>
+                {roomSnapshot?.lobby.map((entry) => (
+                  <div key={entry.userId} className="list-item">
+                    <div>
+                      <strong>{entry.userId}</strong>
+                      <p>{entry.role ?? "guest"}</p>
+                    </div>
+                    <div className="row">
+                      <button type="button" onClick={() => admitUser(entry.userId)}>
+                        Admit
+                      </button>
+                      <button type="button" onClick={() => denyUser(entry.userId)}>
+                        Deny
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!roomSnapshot?.lobby.length ? <p className="hint">No one waiting.</p> : null}
+              </div>
+              <div className="tile">
+                <div className="tile-header">
+                  <strong>Participants</strong>
+                  <span className="badge ok">{roomSnapshot?.participants.length ?? 0}</span>
+                </div>
+                {roomSnapshot?.participants.map((entry) => (
+                  <div key={entry.userId} className="list-item">
+                    <div>
+                      <strong>{entry.userId}</strong>
+                      <p>{entry.role ?? "user"}</p>
+                    </div>
+                    <div className="row">
+                      <button type="button" onClick={() => muteUser(entry.userId)}>
+                        {roomMuteState[entry.userId] ? "Unmute" : "Mute"}
+                      </button>
+                      <button type="button" onClick={() => kickUser(entry.userId)}>
+                        Kick
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {!roomSnapshot?.participants.length ? <p className="hint">No participants.</p> : null}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="card">
           <h2>LiveKit SFU</h2>
           <div className="stack">
             <p className="hint">Uses LiveKit server for SFU; requires a room id (meeting id).</p>
@@ -732,6 +993,8 @@ function App() {
             {livekitError ? <p className="status error">{livekitError}</p> : null}
             <p className="hint">Participants: {livekitParticipantCount}</p>
             <p className="hint">Remote tracks: {livekitTracks.length}</p>
+            <p className="hint">Room state: {livekitRoomState}</p>
+            <p className="hint">Signal state: {livekitSignalState} (reconnects: {livekitReconnects})</p>
             <div className="stats-grid">
               <div className="stat">
                 <span className="label">Local video bitrate</span>
@@ -740,6 +1003,14 @@ function App() {
               <div className="stat">
                 <span className="label">Local packet loss</span>
                 <strong>{livekitLocalStats?.packetLossPct ?? "-"}%</strong>
+              </div>
+              <div className="stat">
+                <span className="label">Local audio bitrate</span>
+                <strong>{livekitLocalAudioStats?.bitrateKbps ?? "-"} kbps</strong>
+              </div>
+              <div className="stat">
+                <span className="label">Local audio loss</span>
+                <strong>{livekitLocalAudioStats?.packetLossPct ?? "-"}%</strong>
               </div>
               <div className="stat">
                 <span className="label">Publish quality</span>
@@ -751,8 +1022,27 @@ function App() {
               <code>{livekitUrl ?? "none"}</code>
             </div>
             <div className="tiles">
+              <div className="tile">
+                <div className="tile-header">
+                  <strong>Remote audio</strong>
+                  <button type="button" className="chip" onClick={toggleMuteAllRemoteAudio}>
+                    {muteAllRemoteAudio ? "Unmute all" : "Mute all"}
+                  </button>
+                </div>
+                <p className="hint">Applies to all remote audio tracks.</p>
+              </div>
               {livekitTracks.map((item) => (
-                <LiveKitTrackTile key={item.id} item={item} stats={livekitStats[item.id]} />
+                <LiveKitTrackTile
+                  key={item.id}
+                  item={item}
+                  stats={livekitStats[item.id]}
+                  quality={livekitQualityPrefs[item.id]}
+                  onQualityChange={updateRemoteQuality}
+                  subscribed={livekitSubscriptions[item.id] ?? true}
+                  muted={livekitAudioMuted[item.id] ?? false}
+                  onToggleSubscribe={toggleSubscription}
+                  onToggleMute={toggleAudioMute}
+                />
               ))}
               {!livekitTracks.length ? <p className="hint">No remote tracks yet.</p> : null}
             </div>
@@ -790,7 +1080,25 @@ async function request(method: string, url: string, body?: unknown, token?: stri
 
 export default App;
 
-function LiveKitTrackTile({ item, stats }: { item: LiveKitTrackItem; stats?: StatsSummary }) {
+function LiveKitTrackTile({
+  item,
+  stats,
+  quality,
+  onQualityChange,
+  subscribed,
+  muted,
+  onToggleSubscribe,
+  onToggleMute,
+}: {
+  item: LiveKitTrackItem;
+  stats?: StatsSummary;
+  quality?: VideoQuality;
+  onQualityChange: (item: LiveKitTrackItem, quality: VideoQuality) => void;
+  subscribed: boolean;
+  muted: boolean;
+  onToggleSubscribe: (item: LiveKitTrackItem) => void;
+  onToggleMute: (item: LiveKitTrackItem) => void;
+}) {
   const ref = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
   useEffect(() => {
     if (!ref.current) return;
@@ -813,11 +1121,35 @@ function LiveKitTrackTile({ item, stats }: { item: LiveKitTrackItem; stats?: Sta
         <strong>{stats?.bitrateKbps ?? "-"} kbps</strong>
         <span className="label">Loss</span>
         <strong>{stats?.packetLossPct ?? "-"}%</strong>
+        <span className="label">Subscribed</span>
+        <button type="button" className="chip" onClick={() => onToggleSubscribe(item)}>
+          {subscribed ? "On" : "Off"}
+        </button>
+        {item.kind === "video" ? (
+          <>
+            <span className="label">Quality</span>
+            <select
+              value={quality ?? VideoQuality.HIGH}
+              onChange={(e) => onQualityChange(item, Number(e.target.value) as VideoQuality)}
+            >
+              <option value={VideoQuality.HIGH}>High</option>
+              <option value={VideoQuality.MEDIUM}>Medium</option>
+              <option value={VideoQuality.LOW}>Low</option>
+            </select>
+          </>
+        ) : (
+          <>
+            <span className="label">Muted</span>
+            <button type="button" className="chip" onClick={() => onToggleMute(item)}>
+              {muted ? "Muted" : "Live"}
+            </button>
+          </>
+        )}
       </div>
       {isVideo ? (
         <video ref={ref as RefObject<HTMLVideoElement>} autoPlay playsInline className="preview remote" />
       ) : (
-        <audio ref={ref as RefObject<HTMLAudioElement>} autoPlay />
+        <audio ref={ref as RefObject<HTMLAudioElement>} autoPlay muted={muted} />
       )}
     </div>
   );

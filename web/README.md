@@ -14,6 +14,10 @@ React + Vite client for LambdaMeet. Provides a simple control panel to authentic
 - LiveKit SFU join/leave scaffold (token from API)
 - LiveKit remote tracks rendered in tiles
 - LiveKit stats (bitrate/packet loss) with adaptive publish quality
+- LiveKit room state and remote quality controls
+- LiveKit signal health + per-track subscribe/mute toggles
+- Meeting access control panel (lobby, lock, admit/deny, mute/kick)
+- Local audio stats and global mute-all-remote-audio toggle
 
 ## Scripts
 - `npm run dev` — start Vite dev server

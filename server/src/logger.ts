@@ -39,3 +39,17 @@ export function actionSuccess(component: string, action: string, extra?: Record<
 export function actionFailure(component: string, action: string, extra?: Record<string, unknown>) {
   withComponent(component).warn({ step: `${action}.failure`, ...extra }, "Action failed");
 }
+
+export function auditLog(action: string, actorId: string, targetId?: string, extra?: Record<string, unknown>) {
+  logger.info(
+    {
+      component: "audit",
+      step: "audit",
+      action,
+      actorId,
+      targetId,
+      ...extra,
+    },
+    "Audit event"
+  );
+}

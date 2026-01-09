@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createLiveKitToken } from "./livekit.js";
+import { buildRoomMetadata, createLiveKitToken } from "./livekit.js";
 
 describe("createLiveKitToken", () => {
   it("returns a jwt token when config is set", async () => {
@@ -10,5 +10,16 @@ describe("createLiveKitToken", () => {
       "Test User"
     );
     expect(String(token).length).toBeGreaterThan(10);
+  });
+
+  it("builds room metadata json", () => {
+    const metadata = buildRoomMetadata({
+      locked: true,
+      lobby: [{ userId: "u1", role: "guest" }],
+      participants: [{ userId: "u2", role: "user" }],
+    });
+    expect(metadata).toContain("\"locked\":true");
+    expect(metadata).toContain("\"lobbyCount\":1");
+    expect(metadata).toContain("\"participantCount\":1");
   });
 });

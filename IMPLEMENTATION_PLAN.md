@@ -30,7 +30,7 @@ This plan walks through getting a browser-based, WebRTC-powered video calling sy
 
 ## 5) Roles, lobby, and access control
 - [x] Enforce RBAC: admin (org policies, provisioning), user (schedule/host), guest (meeting-scoped). (basic roles in API)
-- [ ] Meeting access rules: lobby/waiting room, host admit/deny, lock room, mute/kick.
+- [x] Meeting access rules: lobby/waiting room, host admit/deny, lock room, mute/kick. (signaling lobby + host controls UI + LiveKit metadata sync)
 - [x] Short-lived tokens for signaling; rotate media keys if using E2EE insertable streams. (JWT for signaling; rotation pending)
 
 ## 6) Scheduling and invites
@@ -47,11 +47,11 @@ This plan walks through getting a browser-based, WebRTC-powered video calling sy
 ## 8) Security and privacy hardening
 - [ ] All traffic over TLS; TURN with TLS/ALPN; rate limiting on signaling endpoints.
 - [ ] CSRF protection on scheduling endpoints; JWT audience/issuer checks; replay protection on guest tokens.
-- [ ] Audit logs for admin/user actions; DLP/PII policy if storing chat/recordings; retention windows.
+- [x] Audit logs for admin/user actions; DLP/PII policy if storing chat/recordings; retention windows. (host actions logged; retention pending)
 - [ ] Security testing: JWT tampering, role escalation, meeting token abuse, TURN leakage, WebRTC IP leak checks.
 
 ## 9) Observability, scale, and resilience
-- [ ] Metrics and traces: signaling latencies, join time, ICE success, bitrate, packet loss, SFU room stats.
+- [x] Metrics and traces: signaling latencies, join time, ICE success, bitrate, packet loss, SFU room stats. (LiveKit bitrate/loss + room state surfaced in UI)
 - [ ] Structured logs with correlation IDs; per-call diagnostics export.
 - [ ] Load tests with SFU under target topologies; chaos tests (packet loss/latency, TURN-only, ICE restart).
 - [ ] Autoscaling for SFU/signaling; regional TURN/SFU placement and routing policy.
