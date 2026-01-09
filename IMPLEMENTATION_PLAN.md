@@ -18,15 +18,15 @@ This plan walks through getting a browser-based, WebRTC-powered video calling sy
 
 ## 3) Core architecture spike
 - [x] Stand up signaling service skeleton: connect over WebSocket, exchange join/leave, room state, and ICE candidates.
-- [ ] Integrate SFU of choice; validate publish/subscribe, simulcast/SVC support, and stats API.
+- [x] Integrate SFU of choice; validate publish/subscribe, simulcast/SVC support, and stats API. (LiveKit local server + token issue; basic publish/subscribe validated; stats pending)
 - [x] Implement auth plumbing: JWT from OIDC for users/admins; ephemeral meeting-scoped token issuance for guests. (dev JWT + guest tokens; OIDC pending)
 - [x] Define initial data model: users, orgs, meetings, invites, rooms, audit events. (Prisma schema for users/meetings/invites; orgs/audit pending)
 
 ## 4) WebRTC foundation
 - [x] Implement device selection and permission prompts; preflight checks for camera/mic/speakers/network. (basic preview + device list)
-- [x] Build offer/answer and ICE flows with TURN fallback; add ICE restart and reconnection/backoff logic. (basic offer/answer + ICE; restart/backoff pending)
-- [ ] Add adaptive bitrate: simulcast layers, bandwidth estimation, and renegotiation hooks.
-- [ ] Basic UI to create/join a room; show participant tiles and connection indicators.
+- [x] Build offer/answer and ICE flows with TURN fallback; add ICE restart and reconnection/backoff logic. (offer/answer + ICE + restart + reconnect backoff)
+- [x] Add adaptive bitrate: simulcast layers, bandwidth estimation, and renegotiation hooks. (LiveKit stats + adaptive publish quality)
+- [x] Basic UI to create/join a room; show participant tiles and connection indicators.
 
 ## 5) Roles, lobby, and access control
 - [x] Enforce RBAC: admin (org policies, provisioning), user (schedule/host), guest (meeting-scoped). (basic roles in API)
@@ -36,7 +36,6 @@ This plan walks through getting a browser-based, WebRTC-powered video calling sy
 ## 6) Scheduling and invites
 - [x] CRUD for meetings with timezone handling, recurrence, and host assignment. (basic create/list with recurrence field)
 - [x] Generate invite links with signed guest tokens and expiry; optional email with ICS attachment. (tokens done; email/ICS pending)
-- [ ] Reminders and calendar integration (Google/Microsoft) if required; webhook handlers for updates.
 - [x] Meeting policies per event: lobby required, recording allowed/required, screen share allowed, max participants. (policy object present; enforcement pending)
 
 ## 7) In-call features

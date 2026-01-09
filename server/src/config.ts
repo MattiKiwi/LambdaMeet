@@ -13,6 +13,9 @@ export type Env = {
   turnUrl?: string;
   turnUsername?: string;
   turnPassword?: string;
+  livekitUrl?: string;
+  livekitApiKey?: string;
+  livekitApiSecret?: string;
 };
 
 export const env: Env = {
@@ -26,4 +29,7 @@ export const env: Env = {
   turnUrl: process.env.TURN_URL,
   turnUsername: process.env.TURN_USERNAME,
   turnPassword: process.env.TURN_PASSWORD,
+  livekitUrl: process.env.LIVEKIT_URL,
+  livekitApiKey: process.env.LIVEKIT_API_KEY,
+  livekitApiSecret: process.env.LIVEKIT_API_SECRET,
 };

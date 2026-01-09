@@ -39,6 +39,15 @@ services:
         "--realm=localhost",
         "--log-file=stdout"
       ]
+  livekit:
+    image: livekit/livekit-server:v1.9.2
+    restart: unless-stopped
+    ports:
+      - "7880:7880"
+      - "7881:7881/udp"
+    command: ["--config", "/etc/livekit.yaml"]
+    volumes:
+      - ./livekit.yaml:/etc/livekit.yaml:ro,Z
 
 volumes:
   db_data:

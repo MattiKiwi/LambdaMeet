@@ -8,6 +8,7 @@ TypeScript API + signaling service for LambdaMeet. Handles authentication, meeti
 - Signaling: WebSocket fanout to room participants
 - Persistence: users/meetings/invites in Postgres
 - Cache: optional Redis connection (enabled when `REDIS_URL` is set)
+- SFU: LiveKit server (token issuance via API)
 - Logging: structured logs with component/step metadata to stdout and `logs/app.log`
 
 ## Scripts
@@ -29,6 +30,9 @@ CORS_ORIGIN=http://localhost:5173
 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/lambdameet?schema=public
 LOG_LEVEL=debug
 REDIS_URL=redis://localhost:6379
+LIVEKIT_URL=http://localhost:7880
+LIVEKIT_API_KEY=devkey
+LIVEKIT_API_SECRET=devsecret
 ```
 
 ## Logging
@@ -45,5 +49,6 @@ Base URL: `/api`
 - `GET /meetings`
 - `POST /meetings`
 - `POST /meetings/:id/invites`
+- `POST /livekit/token`
 
 WebSocket signaling: `/ws?token=...&meetingId=...`

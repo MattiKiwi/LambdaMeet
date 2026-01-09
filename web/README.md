@@ -9,6 +9,11 @@ React + Vite client for LambdaMeet. Provides a simple control panel to authentic
 - Connect to signaling WebSocket for ICE/SDP exchange
 - Run device preflight (camera/mic preview + device enumeration)
 - Basic offer/answer + ICE exchange via signaling (demo)
+- Participant tiles with connection indicators and ICE restart control
+- Auto-reconnect signaling with exponential backoff
+- LiveKit SFU join/leave scaffold (token from API)
+- LiveKit remote tracks rendered in tiles
+- LiveKit stats (bitrate/packet loss) with adaptive publish quality
 
 ## Scripts
 - `npm run dev` — start Vite dev server

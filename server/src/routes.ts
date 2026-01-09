@@ -6,6 +6,7 @@ import { createInvite, createMeeting, findMeeting, findUserByEmail, listMeetings
 import { actionFailure, actionStart, actionSuccess, withComponent } from "./logger.js";
 import { Role } from "./types.js";
 import { getTurnConfig } from "./turn.js";
+import { createLiveKitToken, getLiveKitConfig } from "./livekit.js";
 
 type AuthenticatedRequest = Request & { user?: AuthTokenPayload };
 
@@ -40,8 +41,9 @@ router.get("/health", (_req, res) => {
 router.get("/config", (_req, res) => {
   actionStart("api", "config");
   const turn = getTurnConfig(env);
-  res.json({ turn });
-  actionSuccess("api", "config", { turnEnabled: Boolean(turn) });
+  const livekit = getLiveKitConfig(env);
+  res.json({ turn, livekit: { url: livekit.url } });
+  actionSuccess("api", "config", { turnEnabled: Boolean(turn), livekitEnabled: Boolean(livekit.url) });
 });
 
 router.get("/me", requireAuth, async (req: AuthenticatedRequest, res) => {
@@ -166,6 +168,27 @@ router.post("/meetings/:id/invites", requireAuth, express.json(), async (req: Au
   log.debug({ step: "invite.create", meetingId: meeting.id, inviteId: invite.id, role: invite.role }, "Invite created");
   res.status(201).json({ invite });
   actionSuccess("api", "invite.create", { meetingId: meeting.id, inviteId: invite.id, role: invite.role });
+});
+
+router.post("/livekit/token", requireAuth, express.json(), async (req: AuthenticatedRequest, res: Response) => {
+  actionStart("api", "livekit.token", { userId: req.user?.sub });
+  const bodySchema = z.object({
+    room: z.string().min(1),
+  });
+  const parse = bodySchema.safeParse(req.body);
+  if (!parse.success) {
+    actionFailure("api", "livekit.token", { reason: "validation" });
+    return res.status(400).json({ error: parse.error.flatten() });
+  }
+  try {
+    const config = getLiveKitConfig(env);
+    const token = await createLiveKitToken(config, parse.data.room, req.user!.sub, req.user!.email);
+    actionSuccess("api", "livekit.token", { room: parse.data.room, userId: req.user!.sub });
+    return res.json({ token, url: config.url });
+  } catch (err) {
+    actionFailure("api", "livekit.token", { reason: "missing_config" });
+    return res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 async function seedAndFetchUser(email: string, role: Role = "user") {

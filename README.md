@@ -17,13 +17,14 @@ npm install --workspaces
 cp server/.env.example server/.env
 # edit server/.env and set JWT_SECRET
 ```
-3) Database + cache + TURN (local)
+3) Database + cache + TURN + LiveKit (local)
 ```bash
 # start Postgres locally (requires docker)
-docker compose up -d db redis turn
+docker compose up -d db redis turn livekit
 # push schema
 cd server && npm run db:push && cd ..
 ```
+LiveKit config is in `livekit.yaml`.
 
 4) Client env (optional if using defaults)
 ```bash

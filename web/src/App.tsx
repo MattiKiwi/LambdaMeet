@@ -1,6 +1,19 @@
-import type { FormEvent } from "react";
+import type { FormEvent, RefObject } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { buildIceConfig, type TurnConfig } from "./lib/rtc";
+import {
+  LocalVideoTrack,
+  Room,
+  RoomEvent,
+  RemoteParticipant,
+  RemoteTrack,
+  RemoteTrackPublication,
+  VideoQuality,
+  createLocalTracks,
+} from "livekit-client";
+import { computeBackoffMs } from "./lib/backoff";
+import { normalizeLiveKitUrl } from "./lib/livekit";
+import { buildIceConfig, connectionBadge, type TurnConfig } from "./lib/rtc";
+import { computeStatsSummary, summarizeReport, type StatsSample, type StatsSummary } from "./lib/stats";
 import { buildWsUrl } from "./lib/ws";
 import "./App.css";
 
@@ -17,6 +30,13 @@ type SignalMessage =
   | { type: "offer"; sdp: string }
   | { type: "answer"; sdp: string }
   | { type: "ice"; candidate: RTCIceCandidateInit };
+type LiveKitTrackItem = {
+  id: string;
+  kind: "video" | "audio";
+  track: RemoteTrack;
+  participantIdentity: string;
+  participantName?: string;
+};
 
 const DEFAULT_API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -33,6 +53,15 @@ function App() {
   });
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [turnConfig, setTurnConfig] = useState<TurnConfig>(null);
+  const [livekitUrl, setLivekitUrl] = useState<string | null>(null);
+  const [livekitError, setLivekitError] = useState<string>("");
+  const [livekitRoom, setLivekitRoom] = useState<Room | null>(null);
+  const [livekitStatus, setLivekitStatus] = useState("disconnected");
+  const [livekitTracks, setLivekitTracks] = useState<LiveKitTrackItem[]>([]);
+  const [livekitParticipantCount, setLivekitParticipantCount] = useState(0);
+  const [livekitStats, setLivekitStats] = useState<Record<string, StatsSummary>>({});
+  const [livekitLocalStats, setLivekitLocalStats] = useState<StatsSummary | null>(null);
+  const [livekitQuality, setLivekitQuality] = useState<VideoQuality>(VideoQuality.HIGH);
   const [inviteMeetingId, setInviteMeetingId] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("guest");
@@ -41,6 +70,9 @@ function App() {
   const [meetingToJoin, setMeetingToJoin] = useState("");
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [wsMessages, setWsMessages] = useState<string[]>([]);
+  const [autoReconnect, setAutoReconnect] = useState(true);
+  const [reconnectAttempts, setReconnectAttempts] = useState(0);
+  const reconnectTimerRef = useRef<number | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -49,6 +81,12 @@ function App() {
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [previewActive, setPreviewActive] = useState(false);
   const [callActive, setCallActive] = useState(false);
+  const [connectionState, setConnectionState] = useState<RTCPeerConnectionState | "idle">("idle");
+  const [iceState, setIceState] = useState<RTCIceConnectionState | "idle">("idle");
+  const livekitStatsTimerRef = useRef<number | null>(null);
+  const livekitLocalTrackRef = useRef<LocalVideoTrack | null>(null);
+  const livekitLocalPrevRef = useRef<StatsSample | null>(null);
+  const livekitRemotePrevRef = useRef<Map<string, StatsSample>>(new Map());
 
   const api = useMemo(() => apiClient(apiBase, token), [apiBase, token]);
 
@@ -72,6 +110,8 @@ function App() {
     const res = await api.get("/config");
     if (res.ok) {
       setTurnConfig(res.data.turn);
+      const rawUrl = res.data.livekit?.url ?? null;
+      setLivekitUrl(rawUrl ? normalizeLiveKitUrl(rawUrl) : null);
     }
   }
 
@@ -122,8 +162,8 @@ function App() {
     setInviteResult(JSON.stringify(res.data.invite, null, 2));
   }
 
-  function connectSignaling(e: FormEvent) {
-    e.preventDefault();
+  function connectSignaling(e?: FormEvent) {
+    e?.preventDefault();
     if (!token || !meetingToJoin) {
       setWsStatus("token or meeting missing");
       return;
@@ -135,8 +175,15 @@ function App() {
     const socket = new WebSocket(wsUrl);
     wsRef.current = socket;
     setWsStatus("connecting");
-    socket.onopen = () => setWsStatus("connected");
-    socket.onclose = () => setWsStatus("disconnected");
+    socket.onopen = () => {
+      setWsStatus("connected");
+      setReconnectAttempts(0);
+      clearReconnectTimer();
+    };
+    socket.onclose = () => {
+      setWsStatus("disconnected");
+      scheduleReconnect();
+    };
     socket.onerror = () => setWsStatus("error");
     socket.onmessage = (evt) => {
       const payload = String(evt.data);
@@ -148,11 +195,31 @@ function App() {
   function disconnectSocket() {
     wsRef.current?.close();
     wsRef.current = null;
+    clearReconnectTimer();
+    setReconnectAttempts(0);
   }
 
   function sendSignal(message: string) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(message);
+  }
+
+  function clearReconnectTimer() {
+    if (reconnectTimerRef.current) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  }
+
+  function scheduleReconnect() {
+    if (!autoReconnect || !token || !meetingToJoin) return;
+    clearReconnectTimer();
+    const nextAttempt = reconnectAttempts + 1;
+    const delay = computeBackoffMs(nextAttempt, { baseMs: 500, maxMs: 8000 });
+    reconnectTimerRef.current = window.setTimeout(() => {
+      setReconnectAttempts(nextAttempt);
+      connectSignaling();
+    }, delay);
   }
 
   function ensurePeerConnection() {
@@ -166,6 +233,15 @@ function App() {
     pc.ontrack = (evt) => {
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = evt.streams[0];
+      }
+    };
+    pc.onconnectionstatechange = () => {
+      setConnectionState(pc.connectionState);
+    };
+    pc.oniceconnectionstatechange = () => {
+      setIceState(pc.iceConnectionState);
+      if (pc.iceConnectionState === "failed") {
+        restartIce();
       }
     };
     pcRef.current = pc;
@@ -196,6 +272,8 @@ function App() {
   async function endCall() {
     pcRef.current?.close();
     pcRef.current = null;
+    setConnectionState("closed");
+    setIceState("closed");
     if (remoteVideoRef.current?.srcObject) {
       const stream = remoteVideoRef.current.srcObject as MediaStream;
       stream.getTracks().forEach((track) => track.stop());
@@ -228,6 +306,162 @@ function App() {
     if (message.type === "ice") {
       await pc.addIceCandidate(message.candidate);
     }
+  }
+
+  async function restartIce() {
+    if (!pcRef.current) return;
+    const offer = await pcRef.current.createOffer({ iceRestart: true });
+    await pcRef.current.setLocalDescription(offer);
+    sendSignal(JSON.stringify({ type: "offer", sdp: offer.sdp || "" } satisfies SignalMessage));
+  }
+
+  async function joinLiveKit() {
+    setLivekitError("");
+    if (!token || !meetingToJoin) {
+      setStatus("Authenticate and set meeting id first");
+      return;
+    }
+    if (!livekitUrl) {
+      setStatus("LiveKit URL not configured");
+      return;
+    }
+    try {
+      const res = await api.post("/livekit/token", { room: meetingToJoin });
+      if (!res.ok) {
+        setStatus("Failed to get LiveKit token");
+        return;
+      }
+      const rawToken = res.data?.token as unknown;
+      const livekitToken =
+        typeof rawToken === "string"
+          ? rawToken
+          : typeof (rawToken as { token?: string })?.token === "string"
+          ? (rawToken as { token: string }).token
+          : null;
+      if (!livekitToken) {
+        setLivekitStatus("disconnected");
+        setLivekitError("LiveKit token missing or invalid");
+        return;
+      }
+      const room = new Room();
+      const updateParticipants = () => {
+        setLivekitParticipantCount(1 + room.remoteParticipants.size);
+      };
+      room.on(RoomEvent.ParticipantConnected, updateParticipants);
+      room.on(RoomEvent.ParticipantDisconnected, updateParticipants);
+      room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication: RemoteTrackPublication, participant: RemoteParticipant) => {
+        setLivekitTracks((prev) => {
+          const id = publication.trackSid || track.sid;
+          if (!id) return prev;
+          if (prev.some((item) => item.id === id)) return prev;
+          if (track.kind !== "video" && track.kind !== "audio") return prev;
+          return [
+            ...prev,
+            {
+              id,
+              kind: track.kind,
+              track,
+              participantIdentity: participant.identity,
+              participantName: participant.name,
+            },
+          ];
+        });
+      });
+      room.on(RoomEvent.TrackUnsubscribed, (_track: RemoteTrack, publication: RemoteTrackPublication) => {
+        setLivekitTracks((prev) => prev.filter((item) => item.id !== publication.trackSid));
+      });
+      room.on(RoomEvent.Disconnected, () => {
+        setLivekitStatus("disconnected");
+        setLivekitTracks([]);
+        setLivekitParticipantCount(0);
+      });
+      setLivekitStatus("connecting");
+      await room.connect(livekitUrl, livekitToken);
+      const tracks = await createLocalTracks({ audio: true, video: true });
+      tracks.forEach((track) => {
+        room.localParticipant.publishTrack(track);
+        if (track.kind === "video" && track instanceof LocalVideoTrack) {
+          livekitLocalTrackRef.current = track;
+        }
+      });
+      setLivekitRoom(room);
+      setLivekitStatus("connected");
+      startLiveKitStatsPolling();
+      updateParticipants();
+    } catch (err) {
+      setLivekitStatus("disconnected");
+      const message = (err as Error).message || "LiveKit connect failed";
+      setLivekitError(message);
+      setStatus(message);
+    }
+  }
+
+  async function leaveLiveKit() {
+    if (livekitRoom) {
+      livekitRoom.localParticipant.trackPublications.forEach((pub) => pub.track?.stop());
+      livekitRoom.removeAllListeners();
+      livekitRoom.disconnect();
+      setLivekitRoom(null);
+    }
+    setLivekitStatus("disconnected");
+    setLivekitTracks([]);
+    setLivekitParticipantCount(0);
+    setLivekitStats({});
+    setLivekitLocalStats(null);
+    livekitLocalPrevRef.current = null;
+    livekitRemotePrevRef.current = new Map();
+    if (livekitStatsTimerRef.current) {
+      window.clearInterval(livekitStatsTimerRef.current);
+      livekitStatsTimerRef.current = null;
+    }
+  }
+
+  function startLiveKitStatsPolling() {
+    if (livekitStatsTimerRef.current) {
+      window.clearInterval(livekitStatsTimerRef.current);
+    }
+    livekitStatsTimerRef.current = window.setInterval(async () => {
+      const localTrack = livekitLocalTrackRef.current;
+      if (localTrack) {
+        const report = await localTrack.getRTCStatsReport();
+        if (report) {
+          const sample = summarizeReport(report.values(), "outbound", "video");
+          const summary = computeStatsSummary(livekitLocalPrevRef.current, sample);
+          if (sample) livekitLocalPrevRef.current = sample;
+          if (summary.bitrateKbps !== null) {
+            setLivekitLocalStats(summary);
+            adjustLiveKitQuality(summary);
+          }
+        }
+      }
+
+      const nextStats: Record<string, StatsSummary> = {};
+      for (const item of livekitTracks) {
+        const report = await item.track.getRTCStatsReport?.();
+        if (!report) continue;
+        const prev = livekitRemotePrevRef.current.get(item.id) || null;
+        const sample = summarizeReport(report.values(), "inbound", item.kind);
+        const summary = computeStatsSummary(prev, sample);
+        if (sample) livekitRemotePrevRef.current.set(item.id, sample);
+        nextStats[item.id] = summary;
+      }
+      if (Object.keys(nextStats).length) {
+        setLivekitStats(nextStats);
+      }
+    }, 2000);
+  }
+
+  function adjustLiveKitQuality(summary: StatsSummary) {
+    if (summary.bitrateKbps === null || summary.packetLossPct === null) return;
+    let nextQuality = VideoQuality.HIGH;
+    if (summary.packetLossPct > 5 || summary.bitrateKbps < 300) {
+      nextQuality = VideoQuality.LOW;
+    } else if (summary.bitrateKbps < 800) {
+      nextQuality = VideoQuality.MEDIUM;
+    }
+    if (nextQuality === livekitQuality) return;
+    livekitLocalTrackRef.current?.setPublishingQuality(nextQuality);
+    setLivekitQuality(nextQuality);
   }
 
   async function listDevices() {
@@ -315,7 +549,6 @@ function App() {
             </div>
             {deviceError ? <p className="status error">{deviceError}</p> : null}
             <video ref={videoRef} autoPlay muted playsInline className="preview" />
-            <video ref={remoteVideoRef} autoPlay playsInline className="preview remote" />
             <div className="list">
               {devices.map((device) => (
                 <div key={device.deviceId} className="list-item">
@@ -435,6 +668,10 @@ function App() {
                 Disconnect
               </button>
             </div>
+            <label className="checkbox">
+              <input type="checkbox" checked={autoReconnect} onChange={(e) => setAutoReconnect(e.target.checked)} />
+              Auto-reconnect
+            </label>
             <button type="button" onClick={() => sendSignal(JSON.stringify({ type: "ping", at: Date.now() }))}>
               Send ping
             </button>
@@ -445,14 +682,80 @@ function App() {
               <button type="button" onClick={endCall} disabled={!callActive}>
                 End call
               </button>
+              <button type="button" onClick={restartIce} disabled={!callActive}>
+                Restart ICE
+              </button>
             </div>
           </form>
+          <div className="tiles">
+            <div className="tile">
+              <div className="tile-header">
+                <strong>Local</strong>
+                <span className={`badge ${connectionBadge(connectionState).tone}`}>
+                  {connectionBadge(connectionState).label}
+                </span>
+              </div>
+              <video ref={videoRef} autoPlay muted playsInline className="preview" />
+            </div>
+            <div className="tile">
+              <div className="tile-header">
+                <strong>Remote</strong>
+                <span className={`badge ${connectionBadge(iceState === "idle" ? "idle" : connectionState).tone}`}>
+                  {iceState}
+                </span>
+              </div>
+              <video ref={remoteVideoRef} autoPlay playsInline className="preview remote" />
+            </div>
+          </div>
           <div className="list">
             {wsMessages.map((m, idx) => (
               <div key={idx} className="list-item">
                 <code>{m}</code>
               </div>
             ))}
+          </div>
+        </section>
+
+        <section className="card">
+          <h2>LiveKit SFU</h2>
+          <div className="stack">
+            <p className="hint">Uses LiveKit server for SFU; requires a room id (meeting id).</p>
+            <div className="row">
+              <button type="button" onClick={joinLiveKit} disabled={livekitStatus === "connecting" || livekitStatus === "connected"}>
+                Join LiveKit
+              </button>
+              <button type="button" onClick={leaveLiveKit} disabled={livekitStatus !== "connected"}>
+                Leave LiveKit
+              </button>
+            </div>
+            <p className="status">Status: {livekitStatus}</p>
+            {livekitError ? <p className="status error">{livekitError}</p> : null}
+            <p className="hint">Participants: {livekitParticipantCount}</p>
+            <p className="hint">Remote tracks: {livekitTracks.length}</p>
+            <div className="stats-grid">
+              <div className="stat">
+                <span className="label">Local video bitrate</span>
+                <strong>{livekitLocalStats?.bitrateKbps ?? "-"} kbps</strong>
+              </div>
+              <div className="stat">
+                <span className="label">Local packet loss</span>
+                <strong>{livekitLocalStats?.packetLossPct ?? "-"}%</strong>
+              </div>
+              <div className="stat">
+                <span className="label">Publish quality</span>
+                <strong>{VideoQuality[livekitQuality]}</strong>
+              </div>
+            </div>
+            <div>
+              <span className="label">LiveKit URL</span>
+              <code>{livekitUrl ?? "none"}</code>
+            </div>
+            <div className="tiles">
+              {livekitTracks.map((item) => (
+                <LiveKitTrackTile key={item.id} item={item} stats={livekitStats[item.id]} />
+              ))}
+              {!livekitTracks.length ? <p className="hint">No remote tracks yet.</p> : null}
+            </div>
           </div>
         </section>
       </main>
@@ -486,3 +789,36 @@ async function request(method: string, url: string, body?: unknown, token?: stri
 }
 
 export default App;
+
+function LiveKitTrackTile({ item, stats }: { item: LiveKitTrackItem; stats?: StatsSummary }) {
+  const ref = useRef<HTMLVideoElement | HTMLAudioElement | null>(null);
+  useEffect(() => {
+    if (!ref.current) return;
+    item.track.attach(ref.current);
+    return () => {
+      item.track.detach(ref.current as HTMLMediaElement);
+    };
+  }, [item]);
+
+  const title = item.participantName || item.participantIdentity;
+  const isVideo = item.kind === "video";
+  return (
+    <div className="tile">
+      <div className="tile-header">
+        <strong>{title}</strong>
+        <span className="badge ok">{item.kind}</span>
+      </div>
+      <div className="tile-stats">
+        <span className="label">Bitrate</span>
+        <strong>{stats?.bitrateKbps ?? "-"} kbps</strong>
+        <span className="label">Loss</span>
+        <strong>{stats?.packetLossPct ?? "-"}%</strong>
+      </div>
+      {isVideo ? (
+        <video ref={ref as RefObject<HTMLVideoElement>} autoPlay playsInline className="preview remote" />
+      ) : (
+        <audio ref={ref as RefObject<HTMLAudioElement>} autoPlay />
+      )}
+    </div>
+  );
+}
