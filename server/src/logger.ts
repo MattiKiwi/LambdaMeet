@@ -27,3 +27,15 @@ export function withComponent(component: string) {
 export function stepLog(component: string, step: string, message: string, extra?: Record<string, unknown>) {
   withComponent(component).debug({ step, ...extra }, message);
 }
+
+export function actionStart(component: string, action: string, extra?: Record<string, unknown>) {
+  withComponent(component).debug({ step: `${action}.start`, ...extra }, "Action started");
+}
+
+export function actionSuccess(component: string, action: string, extra?: Record<string, unknown>) {
+  withComponent(component).info({ step: `${action}.success`, ...extra }, "Action succeeded");
+}
+
+export function actionFailure(component: string, action: string, extra?: Record<string, unknown>) {
+  withComponent(component).warn({ step: `${action}.failure`, ...extra }, "Action failed");
+}

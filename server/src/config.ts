@@ -9,6 +9,10 @@ export type Env = {
   devAuthEnabled: boolean;
   corsOrigin: string | undefined;
   logLevel: string;
+  redisUrl?: string;
+  turnUrl?: string;
+  turnUsername?: string;
+  turnPassword?: string;
 };
 
 export const env: Env = {
@@ -18,4 +22,8 @@ export const env: Env = {
   devAuthEnabled: process.env.DEV_AUTH_ENABLED !== "false",
   corsOrigin: process.env.CORS_ORIGIN,
   logLevel: process.env.LOG_LEVEL || "info",
+  redisUrl: process.env.REDIS_URL,
+  turnUrl: process.env.TURN_URL,
+  turnUsername: process.env.TURN_USERNAME,
+  turnPassword: process.env.TURN_PASSWORD,
 };

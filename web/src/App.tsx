@@ -1,5 +1,7 @@
 import type { FormEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { buildIceConfig, type TurnConfig } from "./lib/rtc";
+import { buildWsUrl } from "./lib/ws";
 import "./App.css";
 
 type Meeting = {
@@ -11,6 +13,10 @@ type Meeting = {
 };
 
 type User = { id: string; email: string; role: string };
+type SignalMessage =
+  | { type: "offer"; sdp: string }
+  | { type: "answer"; sdp: string }
+  | { type: "ice"; candidate: RTCIceCandidateInit };
 
 const DEFAULT_API = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
 
@@ -26,6 +32,7 @@ function App() {
     lobbyRequired: true,
   });
   const [meetings, setMeetings] = useState<Meeting[]>([]);
+  const [turnConfig, setTurnConfig] = useState<TurnConfig>(null);
   const [inviteMeetingId, setInviteMeetingId] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState("guest");
@@ -35,6 +42,13 @@ function App() {
   const [wsStatus, setWsStatus] = useState("disconnected");
   const [wsMessages, setWsMessages] = useState<string[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [deviceError, setDeviceError] = useState("");
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [previewActive, setPreviewActive] = useState(false);
+  const [callActive, setCallActive] = useState(false);
 
   const api = useMemo(() => apiClient(apiBase, token), [apiBase, token]);
 
@@ -43,10 +57,21 @@ function App() {
     loadMeetings();
   }, [token]);
 
+  useEffect(() => {
+    loadConfig();
+  }, [apiBase]);
+
   async function loadMeetings() {
     const res = await api.get("/meetings");
     if (res.ok) {
       setMeetings(res.data.meetings);
+    }
+  }
+
+  async function loadConfig() {
+    const res = await api.get("/config");
+    if (res.ok) {
+      setTurnConfig(res.data.turn);
     }
   }
 
@@ -114,7 +139,9 @@ function App() {
     socket.onclose = () => setWsStatus("disconnected");
     socket.onerror = () => setWsStatus("error");
     socket.onmessage = (evt) => {
-      setWsMessages((prev) => [evt.data as string, ...prev].slice(0, 10));
+      const payload = String(evt.data);
+      setWsMessages((prev) => [payload, ...prev].slice(0, 10));
+      handleSignal(payload);
     };
   }
 
@@ -126,6 +153,114 @@ function App() {
   function sendSignal(message: string) {
     if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) return;
     wsRef.current.send(message);
+  }
+
+  function ensurePeerConnection() {
+    if (pcRef.current) return pcRef.current;
+    const pc = new RTCPeerConnection(buildIceConfig(turnConfig));
+    pc.onicecandidate = (evt) => {
+      if (evt.candidate) {
+        sendSignal(JSON.stringify({ type: "ice", candidate: evt.candidate } satisfies SignalMessage));
+      }
+    };
+    pc.ontrack = (evt) => {
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = evt.streams[0];
+      }
+    };
+    pcRef.current = pc;
+    return pc;
+  }
+
+  async function startCall() {
+    if (!wsRef.current || wsRef.current.readyState !== WebSocket.OPEN) {
+      setStatus("Connect signaling first");
+      return;
+    }
+    const pc = ensurePeerConnection();
+    let stream = videoRef.current?.srcObject as MediaStream | null;
+    if (!stream) {
+      stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setPreviewActive(true);
+    }
+    stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendSignal(JSON.stringify({ type: "offer", sdp: offer.sdp || "" } satisfies SignalMessage));
+    setCallActive(true);
+  }
+
+  async function endCall() {
+    pcRef.current?.close();
+    pcRef.current = null;
+    if (remoteVideoRef.current?.srcObject) {
+      const stream = remoteVideoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach((track) => track.stop());
+      remoteVideoRef.current.srcObject = null;
+    }
+    setCallActive(false);
+  }
+
+  async function handleSignal(payload: string) {
+    let message: SignalMessage | null = null;
+    try {
+      message = JSON.parse(payload) as SignalMessage;
+    } catch {
+      return;
+    }
+    const pc = ensurePeerConnection();
+    if (message.type === "offer") {
+      await pc.setRemoteDescription({ type: "offer", sdp: message.sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      sendSignal(JSON.stringify({ type: "answer", sdp: answer.sdp || "" } satisfies SignalMessage));
+      setCallActive(true);
+      return;
+    }
+    if (message.type === "answer") {
+      await pc.setRemoteDescription({ type: "answer", sdp: message.sdp });
+      setCallActive(true);
+      return;
+    }
+    if (message.type === "ice") {
+      await pc.addIceCandidate(message.candidate);
+    }
+  }
+
+  async function listDevices() {
+    setDeviceError("");
+    try {
+      const list = await navigator.mediaDevices.enumerateDevices();
+      setDevices(list);
+    } catch (err) {
+      setDeviceError((err as Error).message || "Failed to list devices");
+    }
+  }
+
+  async function startPreview() {
+    setDeviceError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+      }
+      setPreviewActive(true);
+      await listDevices();
+    } catch (err) {
+      setDeviceError((err as Error).message || "Failed to start preview");
+    }
+  }
+
+  function stopPreview() {
+    if (videoRef.current?.srcObject) {
+      const stream = videoRef.current.srcObject as MediaStream;
+      stream.getTracks().forEach((track) => track.stop());
+      videoRef.current.srcObject = null;
+    }
+    setPreviewActive(false);
   }
 
   return (
@@ -162,6 +297,42 @@ function App() {
             <input value={apiBase} onChange={(e) => setApiBase(e.target.value)} />
           </label>
           <p className="hint">Defaults to http://localhost:4000 (DEV_AUTH_ENABLED on backend for passwordless login).</p>
+        </section>
+
+        <section className="card">
+          <h2>WebRTC preflight</h2>
+          <div className="stack">
+            <div className="row">
+              <button type="button" onClick={startPreview}>
+                Start preview
+              </button>
+              <button type="button" onClick={stopPreview} disabled={!previewActive}>
+                Stop preview
+              </button>
+              <button type="button" onClick={listDevices}>
+                Refresh devices
+              </button>
+            </div>
+            {deviceError ? <p className="status error">{deviceError}</p> : null}
+            <video ref={videoRef} autoPlay muted playsInline className="preview" />
+            <video ref={remoteVideoRef} autoPlay playsInline className="preview remote" />
+            <div className="list">
+              {devices.map((device) => (
+                <div key={device.deviceId} className="list-item">
+                  <div>
+                    <strong>{device.label || device.kind}</strong>
+                    <p>{device.kind}</p>
+                  </div>
+                  <code>{device.deviceId.slice(0, 8)}</code>
+                </div>
+              ))}
+              {!devices.length ? <p className="hint">No devices listed yet.</p> : null}
+            </div>
+            <div>
+              <span className="label">TURN config</span>
+              <code>{turnConfig ? JSON.stringify(turnConfig) : "none"}</code>
+            </div>
+          </div>
         </section>
 
         <section className="card">
@@ -267,6 +438,14 @@ function App() {
             <button type="button" onClick={() => sendSignal(JSON.stringify({ type: "ping", at: Date.now() }))}>
               Send ping
             </button>
+            <div className="row">
+              <button type="button" onClick={startCall} disabled={callActive}>
+                Start call
+              </button>
+              <button type="button" onClick={endCall} disabled={!callActive}>
+                End call
+              </button>
+            </div>
           </form>
           <div className="list">
             {wsMessages.map((m, idx) => (
@@ -304,14 +483,6 @@ async function request(method: string, url: string, body?: unknown, token?: stri
   });
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, data };
-}
-
-function buildWsUrl(apiBase: string, token: string, meetingId: string) {
-  const wsBase = apiBase.replace(/^http/, "ws").replace(/\/$/, "");
-  const url = new URL(wsBase + "/ws");
-  url.searchParams.set("token", token);
-  url.searchParams.set("meetingId", meetingId);
-  return url.toString();
 }
 
 export default App;

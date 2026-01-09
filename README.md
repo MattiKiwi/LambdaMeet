@@ -17,10 +17,10 @@ npm install --workspaces
 cp server/.env.example server/.env
 # edit server/.env and set JWT_SECRET
 ```
-3) Database (local)
+3) Database + cache + TURN (local)
 ```bash
 # start Postgres locally (requires docker)
-docker compose up -d db
+docker compose up -d db redis turn
 # push schema
 cd server && npm run db:push && cd ..
 ```

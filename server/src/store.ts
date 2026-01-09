@@ -4,29 +4,45 @@ import { prisma } from "./db.js";
 import { Prisma } from "@prisma/client";
 import { addMinutes } from "./time.js";
 import { Role } from "./types.js";
+import { actionStart, actionSuccess } from "./logger.js";
 
 export async function seedAdmin(email: string, password?: string) {
+  actionStart("store", "user.seed_admin", { email });
   const existing = await prisma.user.findUnique({ where: { email } });
-  if (existing) return existing;
+  if (existing) {
+    actionSuccess("store", "user.seed_admin", { email, userId: existing.id });
+    return existing;
+  }
   const passwordHash = password ? bcrypt.hashSync(password, 10) : undefined;
-  return prisma.user.create({
+  const user = await prisma.user.create({
     data: { email, role: "admin", passwordHash },
   });
+  actionSuccess("store", "user.seed_admin", { email, userId: user.id });
+  return user;
 }
 
 export async function createUser(email: string, role: Role, password?: string) {
+  actionStart("store", "user.create", { email, role });
   const passwordHash = password ? bcrypt.hashSync(password, 10) : undefined;
-  return prisma.user.create({
+  const user = await prisma.user.create({
     data: { email, role, passwordHash },
   });
+  actionSuccess("store", "user.create", { userId: user.id, role: user.role });
+  return user;
 }
 
 export async function findUserByEmail(email: string) {
-  return prisma.user.findUnique({ where: { email } });
+  actionStart("store", "user.find_by_email", { email });
+  const user = await prisma.user.findUnique({ where: { email } });
+  actionSuccess("store", "user.find_by_email", { email, found: Boolean(user) });
+  return user;
 }
 
 export async function findUser(id: string) {
-  return prisma.user.findUnique({ where: { id } });
+  actionStart("store", "user.find_by_id", { userId: id });
+  const user = await prisma.user.findUnique({ where: { id } });
+  actionSuccess("store", "user.find_by_id", { userId: id, found: Boolean(user) });
+  return user;
 }
 
 export async function createMeeting(input: {
@@ -38,7 +54,8 @@ export async function createMeeting(input: {
   recurrence?: string;
   policy: Prisma.InputJsonValue;
 }) {
-  return prisma.meeting.create({
+  actionStart("store", "meeting.create", { hostId: input.hostId });
+  const meeting = await prisma.meeting.create({
     data: {
       hostId: input.hostId,
       title: input.title,
@@ -49,23 +66,32 @@ export async function createMeeting(input: {
       policyJson: input.policy,
     },
   });
+  actionSuccess("store", "meeting.create", { meetingId: meeting.id, hostId: meeting.hostId });
+  return meeting;
 }
 
 export async function listMeetingsForUser(userId: string) {
-  return prisma.meeting.findMany({
+  actionStart("store", "meeting.list", { userId });
+  const meetings = await prisma.meeting.findMany({
     where: { hostId: userId },
     orderBy: { startTime: "asc" },
   });
+  actionSuccess("store", "meeting.list", { userId, count: meetings.length });
+  return meetings;
 }
 
 export async function findMeeting(id: string) {
-  return prisma.meeting.findUnique({ where: { id } });
+  actionStart("store", "meeting.find", { meetingId: id });
+  const meeting = await prisma.meeting.findUnique({ where: { id } });
+  actionSuccess("store", "meeting.find", { meetingId: id, found: Boolean(meeting) });
+  return meeting;
 }
 
 export async function createInvite(meetingId: string, role: Role, email?: string, ttlMinutes = 120) {
+  actionStart("store", "invite.create", { meetingId, role });
   const token = randomUUID();
   const expiresAt = addMinutes(new Date(), ttlMinutes);
-  return prisma.invite.create({
+  const invite = await prisma.invite.create({
     data: {
       meetingId,
       role,
@@ -74,13 +100,18 @@ export async function createInvite(meetingId: string, role: Role, email?: string
       expiresAt,
     },
   });
+  actionSuccess("store", "invite.create", { inviteId: invite.id, meetingId: invite.meetingId });
+  return invite;
 }
 
 export async function findInviteByToken(token: string) {
-  return prisma.invite.findFirst({
+  actionStart("store", "invite.find_by_token", { token });
+  const invite = await prisma.invite.findFirst({
     where: {
       token,
       expiresAt: { gt: new Date() },
     },
   });
+  actionSuccess("store", "invite.find_by_token", { found: Boolean(invite) });
+  return invite;
 }

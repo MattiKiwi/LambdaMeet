@@ -12,8 +12,9 @@ This plan walks through getting a browser-based, WebRTC-powered video calling sy
 ## 2) Development environment setup
 - [x] Initialize repo (monorepo or separate client/server) with package manager, formatter, linter, and CI scaffolding. (repo/workspaces done; lint/CI pending)
 - [ ] Configure env secrets management (dotenv + vault/KMS for production).
-- [x] Set up base services: Web client (React/Vue/Svelte), signaling service (Node/Go) with WebSocket, SQL DB (Postgres), cache (Redis). (client + signaling + Postgres done; cache pending)
-- [ ] Add dev certs for local HTTPS (required for getUserMedia) and a TURN server running locally or via docker.
+- [x] Set up base services: Web client (React/Vue/Svelte), signaling service (Node/Go) with WebSocket, SQL DB (Postgres), cache (Redis). (client + signaling + Postgres + Redis done)
+- [x] TURN server running locally or via docker. (coturn container added)
+- [ ] HTTPS handled by proxy manager in deployment; no local dev certs required.
 
 ## 3) Core architecture spike
 - [x] Stand up signaling service skeleton: connect over WebSocket, exchange join/leave, room state, and ICE candidates.
@@ -22,8 +23,8 @@ This plan walks through getting a browser-based, WebRTC-powered video calling sy
 - [x] Define initial data model: users, orgs, meetings, invites, rooms, audit events. (Prisma schema for users/meetings/invites; orgs/audit pending)
 
 ## 4) WebRTC foundation
-- [ ] Implement device selection and permission prompts; preflight checks for camera/mic/speakers/network.
-- [ ] Build offer/answer and ICE flows with TURN fallback; add ICE restart and reconnection/backoff logic.
+- [x] Implement device selection and permission prompts; preflight checks for camera/mic/speakers/network. (basic preview + device list)
+- [x] Build offer/answer and ICE flows with TURN fallback; add ICE restart and reconnection/backoff logic. (basic offer/answer + ICE; restart/backoff pending)
 - [ ] Add adaptive bitrate: simulcast layers, bandwidth estimation, and renegotiation hooks.
 - [ ] Basic UI to create/join a room; show participant tiles and connection indicators.
 
